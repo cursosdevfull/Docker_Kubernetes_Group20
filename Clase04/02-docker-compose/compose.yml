@@ -1,0 +1,132 @@
+services:
+  server-mysql:
+    image: mysql:8
+    container_name: server-mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: 12345
+      MYSQL_DATABASE: cursos_db
+      MYSQL_USER: user_cursos
+      MYSQL_PASSWORD: pass_cursos
+    networks:
+      - cursos-network
+    volumes:
+      - mysql-data20:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    deploy:
+      resources:
+        reservations:
+          memory: 128M
+          cpus: "0.25"
+        limits:
+          memory: 256M
+          cpus: "0.50"
+
+  client-mysql:
+    image: phpmyadmin
+    container_name: client-mysql
+    environment:
+      PMA_HOST: server-mysql
+      PMA_USER: user_cursos
+      PMA_PASSWORD: pass_cursos
+    ports:
+      - "8080:80"
+    networks:
+      - cursos-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+    depends_on:
+      server-mysql:
+        condition: service_healthy
+    deploy:
+      resources:
+        reservations:
+          memory: 64M
+          cpus: "0.2"
+        limits:
+          memory: 128M
+          cpus: "0.4"
+
+  backend-cursos:
+    image: backend-cursos:1.0
+    container_name: backend-cursos
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    ports:
+      - "9010:5001"
+    environment:
+      PORT: 5001
+      API_VERSION: v2
+      DB_HOST: server-mysql
+      DB_PORT: 3306
+      DB_USER: user_cursos
+      DB_PASSWORD: pass_cursos
+      DB_NAME: cursos_db
+    networks:
+      - cursos-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5001/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+    depends_on:
+      server-mysql:
+        condition: service_healthy
+    deploy:
+      resources:
+        reservations:
+          memory: 64M
+          cpus: "0.2"
+        limits:
+          memory: 128M
+          cpus: "0.4"
+
+  frontend-cursos:
+    image: frontend-cursos:1.0
+    container_name: frontend-cursos
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    ports:
+      - "9000:5000"
+    environment:
+      PORT: 5000
+      API_VERSION: v2
+      API_BASE_URL: http://localhost:9010
+    networks:
+      - cursos-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+    depends_on:
+      backend-cursos:
+        condition: service_healthy
+    deploy:
+      resources:
+        reservations:
+          memory: 64M
+          cpus: "0.2"
+        limits:
+          memory: 128M
+          cpus: "0.4"
+
+networks:
+  cursos-network:
+    driver: bridge
+
+volumes:
+  mysql-data20:
+    driver: local

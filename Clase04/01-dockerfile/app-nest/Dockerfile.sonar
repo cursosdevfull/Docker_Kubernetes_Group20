@@ -1,0 +1,71 @@
+ARG NODE_VERSION=24
+
+FROM node:${NODE_VERSION}-alpine AS stage-base
+WORKDIR /app
+
+# Stage para instalar dependencias de desarrollo (incluye SonarQube Scanner)
+FROM stage-base AS stage-dependencies-dev
+RUN --mount=type=bind,source=package.json,target=package.json \
+    --mount=type=bind,source=package-lock.json,target=package-lock.json \
+    --mount=type=cache,target=/root/.npm \
+    npm ci
+
+# Stage de análisis de código con SonarQube
+FROM stage-dependencies-dev AS stage-sonar-analysis
+# Instalar SonarQube Scanner
+RUN apk add --no-cache openjdk11-jre
+RUN npm install -g sonarqube-scanner
+
+# Copiar código fuente para análisis
+COPY . .
+
+# Configurar SonarQube Scanner
+# Nota: Las propiedades pueden ser configuradas vía variables de entorno o archivo sonar-project.properties
+ENV SONAR_HOST_URL=${SONAR_HOST_URL:-http://localhost:9000}
+ENV SONAR_PROJECT_KEY=${SONAR_PROJECT_KEY:-app-nest}
+ENV SONAR_PROJECT_NAME=${SONAR_PROJECT_NAME:-"NestJS Application"}
+ENV SONAR_PROJECT_VERSION=${SONAR_PROJECT_VERSION:-1.0}
+ENV SONAR_SOURCES=${SONAR_SOURCES:-src}
+ENV SONAR_EXCLUSIONS=${SONAR_EXCLUSIONS:-"**/node_modules/**,**/dist/**,**/*.spec.ts,**/*.test.ts"}
+ENV SONAR_TYPESCRIPT_LCOV_REPORTPATHS=${SONAR_TYPESCRIPT_LCOV_REPORTPATHS:-coverage/lcov.info}
+
+# Ejecutar tests y generar coverage (si existe configuración de tests)
+RUN npm run test:cov || echo "No test coverage available"
+
+# Ejecutar análisis de SonarQube
+# Este comando fallará si el Quality Gate no pasa
+RUN sonar-scanner \
+    -Dsonar.projectKey=${SONAR_PROJECT_KEY} \
+    -Dsonar.projectName="${SONAR_PROJECT_NAME}" \
+    -Dsonar.projectVersion=${SONAR_PROJECT_VERSION} \
+    -Dsonar.sources=${SONAR_SOURCES} \
+    -Dsonar.exclusions="${SONAR_EXCLUSIONS}" \
+    -Dsonar.typescript.lcov.reportPaths=${SONAR_TYPESCRIPT_LCOV_REPORTPATHS} \
+    -Dsonar.qualitygate.wait=true
+
+# Stage para dependencias de producción solamente
+FROM stage-base AS stage-dependencies
+RUN --mount=type=bind,source=package.json,target=package.json \
+    --mount=type=bind,source=package-lock.json,target=package-lock.json \
+    --mount=type=cache,target=/root/.npm \
+    npm ci --omit=dev
+
+# Stage de build (solo se ejecuta si SonarQube pasa)
+FROM stage-sonar-analysis AS stage-build
+RUN npm run build
+
+# Stage de producción final
+FROM stage-base AS stage-production
+COPY --from=stage-dependencies /app/node_modules ./node_modules
+COPY --from=stage-build /app/dist ./dist
+COPY ./package.json .
+
+# Exponer puerto (ajustar según la aplicación)
+EXPOSE 3000
+
+# Usuario no root para mayor seguridad
+RUN addgroup -g 1001 -S nodejs
+RUN adduser -S nestjs -u 1001
+USER nestjs
+
+CMD ["npm", "run", "start:prod"]
